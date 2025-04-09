@@ -5,7 +5,7 @@
 #define NEXTRA2 512
 #define TEXTURE_1 "texture_1.png"
 #define TEXTURE_2 "texture_2.png"
-#define TEXTURE_3 "uv.png"
+#define TEXTURE_3 "texture_3.png"
 #define	UV_30_ZERO {-7., -8., 0.}
 double const UV_30_SCALE = 1. / 15.;
 #define UV_50_ZERO {-7., -8., 0.}
@@ -16,6 +16,7 @@ double const UV_50_SCALE = 1. / 18.;
 #define UV_50_END_TOP 72
 size_t const UV_50_LEN_BOTTOM = UV_50_END_BOTTOM - UV_50_START_BOTTOM;
 size_t const UV_50_LEN_TOP = UV_50_END_TOP - UV_50_START_TOP;
+double const SIDE_UV_SCALE = 1. / HEIGHT;
 
 #define LEN(x) (sizeof((x))/sizeof(*(x)))
 
@@ -31,6 +32,8 @@ size_t const UV_50_LEN_TOP = UV_50_END_TOP - UV_50_START_TOP;
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#include <random>
+#include <algorithm>
 
 #ifdef _DEBUG
 #include <Debugapi.h>
@@ -156,6 +159,15 @@ static void reverse_uv_x(vec2 *uv, size_t npoints) {
 	for (size_t i = 0; i < npoints; i++)
 		uv[i].x = 1 - uv[i].x;
 }
+static double mind(double a, double b, double c) {
+	double m1 = (a < b) ? a : b;
+	return (m1 < c) ? m1 : c;
+}
+static double maxd(double a, double b, double c) {
+	double m1 = (a > b) ? a : b;
+	return (m1 > c) ? m1 : c;
+}
+
 
 // *INDENT-OFF*
 static vec3 /* основные цвета */
@@ -273,13 +285,15 @@ static vec2 prism50uv[LEN(prism50verts)];
 static vec2 prism50TopUv[UV_50_LEN_TOP];
 static vec2 prism50BottomUv[UV_50_LEN_BOTTOM];
 
-bool texturing = false;
+bool texturing = true;
 bool lighting = true;
 bool alpha = true;
 bool smoothShade = true;
 bool lightFollowsCamera = true;
-bool insideCulling = true;
+bool insideCulling = false;
 bool showNormals = false;
+bool thickNormals = false;
+bool togglePrism = true;
 
 //переключение режимов освещения, текстурирования, альфаналожения
 void switchModes(OpenGL *sender, KeyEventArg arg) {
@@ -307,6 +321,12 @@ void switchModes(OpenGL *sender, KeyEventArg arg) {
 		break;
 	case 'N':
 		showNormals = !showNormals;
+		break;
+	case ';':
+		thickNormals = !thickNormals;
+		break;
+	case '\\':
+		togglePrism = !togglePrism;
 		break;
 	}
 }
@@ -339,6 +359,34 @@ static GLuint prepareTexture(char const *path) {
 	return id;
 }
 
+static void reloadTexture(GLuint id, char const *path) {
+	/* Загрузка текстуры */
+	int x, y, n;
+	unsigned char *data = stbi_load(path, &x, &y, &n, 4);
+	glBindTexture(GL_TEXTURE_2D, id);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, x, y, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+	stbi_image_free(data);
+}
+
+static void gen_side_uv(vec3 const *verts, size_t len, vec2 *uv) {
+	double offset = 0;
+	for (size_t i = 0; i < len; i += 6) {
+		double xx = verts[i+0].x - verts[i+1].x;
+		double yy = verts[i+0].y - verts[i+1].y;
+		double xy_dist = sqrt(xx * xx + yy * yy) * SIDE_UV_SCALE;
+		// A B C, A C D :
+		// D C
+		// A B
+		uv[i+0] = {offset + xy_dist, 0.}; // A
+		uv[i+1] = {offset, 0.}; // B
+		uv[i+2] = {offset, 1.}; // C
+		uv[i+3] = {offset + xy_dist, 0.}; // A
+		uv[i+4] = {offset, 1.}; // C
+		uv[i+5] = {offset + xy_dist, 1.}; // D
+		offset += xy_dist;
+	}
+}
+
 static size_t prism50BottomStart, prism50BottomEnd, prism50TopStart, prism50TopEnd;
 
 static void fill_prism50(void) {
@@ -349,6 +397,7 @@ static void fill_prism50(void) {
 		prism50verts[j++] = prism50data[i + 2];
 		prism50verts[j++] = prism50data[i + 3];
 	}
+	gen_side_uv(prism50verts, UV_50_START_BOTTOM, prism50uv);
 	calc_uv_xrev(prism50verts + UV_50_START_BOTTOM, UV_50_LEN_BOTTOM, prism50uv + UV_50_START_BOTTOM,
 		UV_50_ZERO, UV_50_SCALE);
 	calc_uv(prism50verts + UV_50_START_TOP, UV_50_LEN_TOP, prism50uv + UV_50_START_TOP, UV_50_ZERO,
@@ -429,6 +478,7 @@ static void fill_prism50(void) {
 		prism50TopEnd = j;
 	}
 
+	j0 = j;
 	// стороны
 	for (size_t i = 1; i < NEXTRA1; i++) {
 		prism50verts[j++] = extra1[i];
@@ -438,6 +488,8 @@ static void fill_prism50(void) {
 		prism50verts[j++] = extra1[2 * NEXTRA1 - i];
 		prism50verts[j++] = extra1[2 * NEXTRA1 - i - 1];
 	}
+	gen_side_uv(prism50verts+j0, j-j0, prism50uv+j0);
+	j0 = j;
 	// Внешняя обшивка вогнутости (4)
 	for (size_t i = 1; i < NEXTRA2; i++) {
 		prism50verts[j++] = extra2[i - 1];
@@ -447,6 +499,7 @@ static void fill_prism50(void) {
 		prism50verts[j++] = extra2[2 * NEXTRA2 - i - 1];
 		prism50verts[j++] = extra2[2 * NEXTRA2 - i];
 	}
+	gen_side_uv(prism50verts+j0, j-j0, prism50uv+j0);
 }
 
 GLuint texId1, texId2, texId3;
@@ -470,7 +523,7 @@ void initRender() {
 	// НАСТРОЙКА ТЕКСТУР
 	texId1 = prepareTexture(TEXTURE_1);
 	texId2 = prepareTexture(TEXTURE_2);
-	// texId3 = prepareTexture(TEXTURE_3);
+	texId3 = prepareTexture(TEXTURE_3);
 	// ---
 
 	//================НАСТРОЙКА КАМЕРЫ======================
@@ -497,6 +550,12 @@ void initRender() {
 }
 
 static void draw_normals(vec3 const *verts, vec3 const *normals, size_t npoints) {
+	if (!showNormals) return;
+	GLfloat oldWidth;
+	if (thickNormals) {
+		glGetFloatv(GL_LINE_WIDTH, &oldWidth);
+		glLineWidth(4.f);
+	}
 	glBegin(GL_LINES);
 	for (size_t i = 0; i < npoints; i += 3) {
 		vec3 a = midpoint(midpoint(verts[i + 0], verts[i + 1]), verts[i + 2]);
@@ -504,12 +563,13 @@ static void draw_normals(vec3 const *verts, vec3 const *normals, size_t npoints)
 		glVertex3dv(a + normals[i / 3]);
 	}
 	glEnd();
+	if (thickNormals) glLineWidth(oldWidth);
 }
 
-static void task35() {
+static void task1() {
 	float const amb[] = {1.0f, 1.0f, 1.0f, 0.5f};
 	float const dif[] = {1.0f, 1.0f, 1.0f, 0.5f};
-	if (showNormals) draw_normals(prism30verts, prism30normals, sizeof(prism30verts) / sizeof(*prism30verts));
+	draw_normals(prism30verts, prism30normals, sizeof(prism30verts) / sizeof(*prism30verts));
 	if (lighting) glEnable(GL_LIGHTING);
 	else glDisable(GL_LIGHTING);
 	if (insideCulling) glEnable(GL_CULL_FACE);
@@ -545,7 +605,7 @@ static void task35() {
 	glEnd();
 }
 
-static void task54_draw_bottom() {
+static void task2_draw_bottom() {
 	glBindTexture(GL_TEXTURE_2D, texId1);
 	glBegin(GL_TRIANGLES);
 	glColor4d(0.75, 0.75, 0.75, 0.75);
@@ -562,7 +622,7 @@ static void task54_draw_bottom() {
 	glEnd();
 }
 
-static void task54_draw_top() {
+static void task2_draw_top() {
 	glBindTexture(GL_TEXTURE_2D, texId2);
 	glBegin(GL_TRIANGLES);
 	for (size_t i = UV_50_START_TOP; i < UV_50_END_TOP; i++) {
@@ -578,40 +638,43 @@ static void task54_draw_top() {
 	glEnd();
 }
 
-static void task54() {
+static void task2() {
 	float const amb[] = {1.0f, 1.0f, 1.0f, 0.5f};
 	float const dif[] = {1.0f, 1.0f, 1.0f, 0.5f};
-	if (showNormals) draw_normals(prism50verts, prism50normals, LEN(prism50verts));
+	draw_normals(prism50verts, prism50normals, LEN(prism50verts));
 	if (lighting) glEnable(GL_LIGHTING);
 	else glDisable(GL_LIGHTING);
 	if (insideCulling) glEnable(GL_CULL_FACE);
 	else glDisable(GL_CULL_FACE);
-	glDisable(GL_TEXTURE_2D);
-	glDisable(GL_BLEND);
+	if (texturing) {
+		glEnable(GL_TEXTURE_2D);
+		glBindTexture(GL_TEXTURE_2D, texId3);
+	}
+	else {
+		glDisable(GL_TEXTURE_2D);
+	}
+	if (alpha) glEnable(GL_BLEND);
+	else glDisable(GL_BLEND);
 	glBegin(GL_TRIANGLES);
 	glColor3d(0.5, 0.5, 0.5);
 	for (size_t i = 0; i < UV_50_START_BOTTOM; i++) {
 		glNormal3dv(prism50normals[i / 3]);
-		// glColor3dv(prism50colors[i/3]);
+		glTexCoord2dv(prism50uv[i]);
 		glVertex3dv(prism50verts[i]);
 	}
 	for (size_t i = prism50TopEnd; i < LEN(prism50verts); i++) {
 		glNormal3dv(prism50normals[i / 3]);
-		// glColor3dv(prism50colors[i/3]);
+		glTexCoord2dv(prism50uv[i]);
 		glVertex3dv(prism50verts[i]);
 	}
 	glEnd();
-	if (texturing)
-		glEnable(GL_TEXTURE_2D);
-	if (alpha)
-		glEnable(GL_BLEND);
 	if (alpha && lighting) {
 		glMaterialfv(GL_FRONT, GL_AMBIENT, amb);
 		glMaterialfv(GL_FRONT, GL_DIFFUSE, dif);
 	}
 	// OIT пока не придумали, соритровку граней оставлю на поотом (никогда)
-	task54_draw_bottom();
-	task54_draw_top();
+	task2_draw_bottom();
+	task2_draw_top();
 }
 
 void Render(double delta_time) {
@@ -622,7 +685,11 @@ void Render(double delta_time) {
 	//в этих функциях находятся OGLные функции
 	//которые устанавливают параметры источника света
 	//и моделвью матрицу, связанные с камерой.
-
+	if (gl.isKeyPressed('0')) {
+		reloadTexture(texId1, TEXTURE_1);
+		reloadTexture(texId2, TEXTURE_2);
+		reloadTexture(texId3, TEXTURE_3);
+	}
 	if (lightFollowsCamera ||
 		gl.isKeyPressed('F')) /* если нажата F - свет из камеры */
 		light.SetPosition(camera.x(), camera.y(), camera.z());
@@ -697,7 +764,8 @@ void Render(double delta_time) {
 		}
 	glEnd();
 
-	task54();
+	if (togglePrism) task2();
+	else task1();
 
 	// восстановить материал
 	glMaterialfv(GL_FRONT, GL_AMBIENT, amb); // фоновая
@@ -758,13 +826,16 @@ void Render(double delta_time) {
 	ss << "C - " << (insideCulling ? L"[вкл]выкл  " : L" вкл[выкл] ") <<
 		L"удаление внутренних граней\n";
 	ss << "N - " << (showNormals ? L"[вкл]выкл  " : L" вкл[выкл] ") << L"нормали\n";
-	ss << L"F - Свет из камеры" << std::endl;
-	ss << L"G - двигать свет по горизонтали" << std::endl;
-	ss << L"G+ЛКМ двигать свет по вертекали" << std::endl;
+	ss << "; - " << (thickNormals ? L"[вкл]выкл  " : L" вкл[выкл] ") << L"нормали толстой линией\n";
+	ss << "\\ - " << (togglePrism ? L" [**]--    " : L"  **[--]   ") << L"переключить призму\n";
+	ss << L"F - Свет из камеры\n";
+	ss << L"G - двигать свет по горизонтали\n";
+	ss << L"G+ЛКМ двигать свет по вертекали\n";
+	ss << L"0 - перезагрузить текстуры\n";
 	ss << L"Коорд. света: (" << std::setw(7) << light.x() << "," << std::setw(
-		7) << light.y() << "," << std::setw(7) << light.z() << ")" << std::endl;
+		7) << light.y() << "," << std::setw(7) << light.z() << ")\n";
 	ss << L"Коорд. камеры: (" << std::setw(7) << camera.x() << "," << std::setw(
-		7) << camera.y() << "," << std::setw(7) << camera.z() << ")" << std::endl;
+		7) << camera.y() << "," << std::setw(7) << camera.z() << ")\n";
 	ss << L"Параметры камеры: R=" << std::setw(7) << camera.distance() << ",fi1=" <<
 		std::setw(7) << camera.fi1() << ",fi2=" << std::setw(7) << camera.fi2() << std::endl;
 	ss << L"delta_time: " << std::setprecision(5) << delta_time << std::endl;
